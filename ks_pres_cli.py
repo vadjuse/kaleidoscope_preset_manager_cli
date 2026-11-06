@@ -12,6 +12,7 @@ import re
 APP_DIR = Path(__file__).resolve().parent
 HISTORY_FILE = APP_DIR / ".history"
 DEVICE_PATH = None
+PRESET_DIR = APP_DIR / "presets"
 
 
 PRESET_NAME_OFFSET = 128
@@ -19,7 +20,7 @@ PRESET_NAME_SIZE = 11
 PRESET_SIZE = 157
 
 ASCII_OFFSETS = [
-    32,
+    95,
     *range(48, 58),
     *range(65, 91)
 ]
@@ -45,23 +46,39 @@ COMMANDS = {
 # ---------------------------------------------------------
 
 def tab_complete(text, state):
-    """Автодополнение команд."""
+    """Автодополнение команд и имён пресетов."""
 
     line = readline.get_line_buffer()
     parts = line.split()
 
+    # Определяем позицию текущего аргумента
+    if line.endswith(" "):
+        arg_index = len(parts)
+    else:
+        arg_index = len(parts) - 1
+
     # Автодополнение команд
-    if not parts or (len(parts) == 1 and not line.endswith(" ")):
+    if arg_index == 0:
         matches = [
             command
             for command in COMMANDS
             if command.startswith(text.lower())
         ]
 
-        return matches[state] if state < len(matches) else None
+    # Автодополнение имён пресетов
+    elif parts and parts[0].lower() == "import" and arg_index == 1:
+        PRESET_DIR.mkdir(exist_ok=True)
 
-    return None
+        matches = [
+            file.name
+            for file in sorted(PRESET_DIR.iterdir())
+            if file.is_file() and file.name.startswith(text)
+        ]
 
+    else:
+        matches = []
+
+    return matches[state] if state < len(matches) else None
 
 # ---------------------------------------------------------
 # COMMAND HANDLERS
@@ -94,7 +111,7 @@ def cmd_device(args):
             return
 
     print("Kaleidoscope not found.")
-    print("Please rename the device to 'KLRU' and try again.")
+    print("Please connect Kaleidoscope and run 'device' manually.")
 
 
 def cmd_export(args):
@@ -104,7 +121,7 @@ def cmd_export(args):
         print("Kaleidoscope not found. Run 'device' first.")
         return
 
-    preset_dir = Path("presets")
+    preset_dir = PRESET_DIR
     preset_dir.mkdir(exist_ok=True)
 
     files = sorted(
@@ -157,6 +174,8 @@ def cmd_export(args):
             print(f"Duplicate name: '{name}'. Saved as '{output_file.name}'")
 
         output_file.write_bytes(data)
+        # Удаляем исходный файл только после успешного копирования
+        file.unlink()
 
         print(f"Exported: {output_file.name}")
         exported += 1
@@ -171,7 +190,66 @@ def cmd_export(args):
 
 
 def cmd_import(args):
-    print("Импорт пресетов пока не реализован.")
+    """Импорт пресета в Kaleidoscope."""
+
+    # Проверка количества аргументов
+    if len(args) != 2:
+        print("Usage: import PRESET_NAME SLOT_NUM")
+        return
+
+    preset_name = args[0]
+    slot_arg = args[1]
+
+    # Проверка существования пресета
+    preset_file = PRESET_DIR / preset_name
+
+    if not preset_file.is_file() or preset_file.parent != PRESET_DIR:
+        print(f"Preset '{preset_name}' not found.")
+        print("Use: import PRESET_NAME SLOT_NUM")
+        return
+
+    # Проверка номера слота
+    if not slot_arg.isdigit():
+        print("Invalid slot number. Slot must be between 0 and 127.")
+        return
+
+    slot_num = int(slot_arg)
+
+    if not 0 <= slot_num <= 127:
+        print("Invalid slot number. Slot must be between 0 and 127.")
+        return
+
+    # Проверка подключения устройства
+    if DEVICE_PATH is None or not DEVICE_PATH.exists():
+        print("Kaleidoscope not found. Run 'device' first.")
+        return
+
+    # Читаем пресет
+    data = preset_file.read_bytes()
+
+    if len(data) < PRESET_SIZE:
+        print(f"Invalid preset file: {preset_name}")
+        return
+
+    # Формируем имя файла для устройства
+    output_name = f"imp{slot_num:03d}.bin"
+    output_file = DEVICE_PATH / output_name
+
+    print(f"Importing preset '{preset_name}' to slot {slot_num}...")
+
+    # Записываем файл на устройство
+    output_file.write_bytes(data)
+
+    print(f"Import completed: {output_name}")
+
+    # Отправляем команду бутлоадеру
+
+    imp_request = DEVICE_PATH / "imp.bin"
+    if imp_request.exists():
+        print("Device is already ready for import.")
+    else:
+        imp_request.touch()
+        print("Import command sent to device.")
 
 
 def cmd_firmware(args):
@@ -231,9 +309,14 @@ def main():
 
     atexit.register(readline.write_history_file, HISTORY_FILE)
 
+    # Initial device detection
+    cmd_device([])
+
     # TAB autocomplete
     readline.parse_and_bind("tab: complete")
     readline.set_completer(tab_complete)
+    readline.parse_and_bind("set show-all-if-ambiguous on")
+    readline.parse_and_bind("set completion-query-items 0")
 
     # Main loop
     while True:
