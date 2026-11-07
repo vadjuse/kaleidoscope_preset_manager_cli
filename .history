@@ -155,3 +155,141 @@ export
 export save
 ls
 quit
+ls
+quit
+ls
+clean
+ls
+export 1
+export 2
+export 3
+export 4
+export 6
+export 5
+export 7
+export 8
+export 9
+export 10
+export 11
+export 12
+export 13
+export 14
+export 15
+export 16
+export 17
+export 19
+export 20
+ls
+fw send blink84beta_classic_font_3Nov2026.bin
+ls
+ejext
+eject
+ls
+connect
+ls
+export save
+ls
+fw send kale81_classic_font.bin
+eject
+quit
+ls
+connect
+quit
+ls
+clean
+ls
+fw send kale81_classic_font.bin
+ls
+export 0
+export 1
+export 2
+export 3
+export 4
+export 5
+export 6
+export 7
+export 8
+export 9
+export 10
+export 11
+export 12
+export 13
+export 14
+export 15
+export 16
+ls
+eject
+ls
+quit
+ls
+export save
+ls
+fw send blink84beta_classic_font_3Nov2026.bin
+eject
+ls
+quit
+fw send kale81_classic_font.bin
+ls
+eject
+ls
+quit
+ls
+fw send blink84beta_classic_font_3Nov2026.bin
+eject
+connect
+ls
+export 1
+export 2
+export 3
+export 5
+export 4
+export 6
+export 7
+export 8
+export 9
+export 10
+export 11
+export 12
+export 13
+export 14
+export 15
+export 16
+export 17
+export 18
+export 19
+export 20
+ls
+export 0
+ls
+eject
+connect
+ls
+fw send blink.bin
+ls
+fw send blink84beta_classic_font_3Nov2026.bin
+quit
+ды
+ls
+fw send blink
+export save
+ls
+fw send blink
+ls
+eject
+connect
+ls
+fw send blink84beta_classic_font_3Nov2026.bin
+ls
+eject
+quit
+ls
+export 
+export 0 20
+ls
+eject
+ls
+connect
+ls
+export save 
+ls
+quit

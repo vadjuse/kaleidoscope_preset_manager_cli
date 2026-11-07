@@ -1,20 +1,27 @@
 import readline
 import atexit
 import shlex
-from pathlib import Path
+from   pathlib import Path
 import re
 import subprocess
 import urllib.request
 import json
 import os
 import shutil
+import sys
 
 
 # ---------------------------------------------------------
 # CONFIGURATION
 # ---------------------------------------------------------
 
-APP_DIR = Path(__file__).resolve().parent
+#APP_DIR = Path(__file__).resolve().parent
+
+if getattr(sys, "frozen", False):
+    APP_DIR = Path(sys.executable).resolve().parent
+else:
+    APP_DIR = Path(__file__).resolve().parent
+
 HISTORY_FILE = APP_DIR / ".history"
 DEVICE_PATH = None
 PRESET_DIR = APP_DIR / "presets"
@@ -128,6 +135,40 @@ def cmd_help():
 
     print()
 
+def clean_apple_files(device_path):
+    """Удаление служебных файлов macOS с флэшки Kaleidoscope."""
+
+    apple_files = {
+        ".Trashes",
+        ".fseventsd",
+        ".Spotlight-V100",
+        ".DS_Store",
+        ".TemporaryItems",
+        ".VolumeIcon.icns",
+        ".DocumentRevisions-V100",
+        ".AppleDouble",
+    }
+
+    # Удаляем известные Apple-каталоги и файлы
+    for name in apple_files:
+        path = device_path / name
+
+        if path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
+        elif path.is_file():
+            try:
+                path.unlink()
+            except OSError:
+                print(f"Cannot remove: {name}")
+
+    # Удаляем AppleDouble-файлы во всех вложенных каталогах
+    for path in device_path.rglob("._*"):
+        try:
+            if path.is_file():
+                path.unlink()
+        except OSError:
+            print(f"Cannot remove: {path.name}")
+
 
 def cmd_device(args):
     """Поиск подключённого Kaleidoscope."""
@@ -142,6 +183,10 @@ def cmd_device(args):
         if volume.is_dir() and volume.name == "KLRU":
             DEVICE_PATH = volume
             print(f"Kaleidoscope found: {DEVICE_PATH}")
+
+            clean_apple_files(DEVICE_PATH)
+            print("Apple files cleaned.")
+
             return
 
     print("Kaleidoscope not found.")
@@ -174,7 +219,7 @@ def cmd_ls(args):
         return
 
     if DEVICE_PATH is None or not DEVICE_PATH.exists():
-        print("Kaleidoscope not found. Run 'device' first.")
+        print("Kaleidoscope not found. Run 'connect' first.")
         return
 
     print(f"\nContents of Kaleidoscope ({DEVICE_PATH}):\n")
@@ -328,35 +373,48 @@ def prepare_export(slot_arg):
 def cmd_export(args):
     """Управление экспортом пресетов."""
 
-    if len(args) != 1:
-        print("Usage:")
-        print("  export save   - save presets from Kaleidoscope to computer")
-        print("  export N      - prepare preset export from slot N (0-127)")
-        return
-
-    if args[0].lower() == "save":
+    if len(args) == 1 and args[0].lower() == "save":
         export_from_device()
         return
 
+    if len(args) not in (1, 2):
+        print("Usage:")
+        print("  export save       - save presets from Kaleidoscope to computer")
+        print("  export N          - prepare export of slot N (0-127)")
+        print("  export N M        - prepare export of slots N through M")
+        return
+
+    # Проверяем числовые аргументы
     try:
-        slot = int(args[0])
+        start = int(args[0])
+        end = int(args[1]) if len(args) == 2 else start
     except ValueError:
         print("Invalid slot number.")
-        print("Usage: export N (0-127) or export save")
+        print("Usage: export N (0-127) or export N M (0-127)")
         return
 
-    if not 0 <= slot <= 127:
-        print("Slot number must be between 0 and 127.")
+    # Проверяем границы
+    if not (0 <= start <= 127 and 0 <= end <= 127):
+        print("Slot numbers must be between 0 and 127.")
         return
 
-    filename = f"exp{slot:03d}.bin"
-    filepath = DEVICE_PATH / filename
-
-    if filepath.exists():
-        print(f"Export command already exists: {filename}")
+    # Проверяем порядок диапазона
+    if start > end:
+        print("Invalid range: starting slot must be less than or equal to ending slot.")
         return
 
-    prepare_export(str(slot))
+    # Подготавливаем экспорт
+    for slot in range(start, end + 1):
+
+        filename = f"exp{slot:03d}.bin"
+        filepath = DEVICE_PATH / filename
+
+        if filepath.exists():
+            print(f"Skipped: {filename} already exists.")
+            continue
+
+        prepare_export(str(slot))
+        print(f"Export prepared: SLOT{slot:03d}")
 
 def cmd_import(args):
     """Импорт пресета в Kaleidoscope."""
@@ -509,9 +567,50 @@ def cmd_firmware(args):
             print("Путь к устройству недоступен.")
             return
 
+        blink_path = device_path / "blink.bin"
+
         try:
+            # Проверяем исходную прошивку
+            source_size = firmware_path.stat().st_size
+
+            if source_size == 0:
+                print("Ошибка: исходная прошивка пустая.")
+                return
+
+            # Проверяем существующий blink.bin
+            if blink_path.exists():
+                if blink_path.stat().st_size == 0:
+                    print("Обнаружен пустой blink.bin. Удаляем...")
+                    blink_path.unlink()
+                else:
+                    print("На устройстве уже существует blink.bin.")
+                    print("Удалите его вручную перед отправкой прошивки.")
+                    return
+
             # Копируем прошивку
-            shutil.copy2(firmware_path, device_path / "blink.bin")
+            try:
+                shutil.copy2(firmware_path, blink_path)
+
+                # Проверяем результат копирования
+                if not blink_path.is_file():
+                    raise IOError("Файл blink.bin не создан.")
+
+                copied_size = blink_path.stat().st_size
+
+                if copied_size == 0:
+                    raise IOError("Скопированный файл пустой.")
+
+                if copied_size != source_size:
+                    raise IOError(
+                        f"Размеры не совпадают: "
+                        f"исходный {source_size}, скопированный {copied_size}"
+                    )
+
+            except Exception:
+                # Удаляем результат неудачного копирования
+                if blink_path.exists():
+                    blink_path.unlink()
+                raise
 
             # Читаем существующий JSON или создаём новый
             config_path = device_path / DEVICE_CONFIG
@@ -528,7 +627,8 @@ def cmd_firmware(args):
             with open(config_path, "w", encoding="utf-8") as f:
                 json.dump(config, f, indent=4, ensure_ascii=False)
 
-            print(f"Прошивка отправлена: {firmware_name}")
+            print(f"Прошивка успешно отправлена: {firmware_name}")
+            print(f"Размер: {copied_size} байт")
 
         except Exception as e:
             print(f"Ошибка отправки прошивки: {e}")
