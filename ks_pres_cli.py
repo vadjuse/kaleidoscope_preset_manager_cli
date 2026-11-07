@@ -3,6 +3,7 @@ import atexit
 import shlex
 from pathlib import Path
 import re
+import subprocess
 
 
 # ---------------------------------------------------------
@@ -37,6 +38,7 @@ COMMANDS = {
     "import": "Импортировать пресеты в Kaleidoscope",
     "firmware": "Проверить или обновить прошивку",
     "clean": "Удалить временные файлы обмена",
+    "eject": "Извлечь Калейдоскоп",
     "quit": "Выход",
 }
 
@@ -114,24 +116,19 @@ def cmd_device(args):
     print("Please connect Kaleidoscope and run 'device' manually.")
 
 
-def cmd_export(args):
-    """Экспорт имён пресетов."""
+def export_from_device():
+    """Забрать экспортированные пресеты с устройства."""
 
     if DEVICE_PATH is None or not DEVICE_PATH.exists():
         print("Kaleidoscope not found. Run 'device' first.")
         return
 
-    preset_dir = PRESET_DIR
-    preset_dir.mkdir(exist_ok=True)
+    PRESET_DIR.mkdir(exist_ok=True)
 
     files = sorted(
-    f for f in DEVICE_PATH.glob("exp*.bin")
-    if re.fullmatch(r"exp\d{3}\.bin", f.name)
-)
-
-    if not files:
-        print("No presets found.")
-        return
+        f for f in DEVICE_PATH.glob("exp*.bin")
+        if re.fullmatch(r"exp\d{3}\.bin", f.name)
+    )
 
     exported = 0
 
@@ -153,18 +150,17 @@ def cmd_export(args):
             if index < len(ASCII_OFFSETS)
         ).rstrip()
 
-
         if not name:
             print(f"Empty preset name: {file.name}")
             continue
 
-        output_file = preset_dir / name
+        output_file = PRESET_DIR / name
 
         if output_file.exists():
             suffix = 2
 
             while True:
-                output_file = preset_dir / f"{name}_{suffix}"
+                output_file = PRESET_DIR / f"{name}_{suffix}"
 
                 if not output_file.exists():
                     break
@@ -174,20 +170,68 @@ def cmd_export(args):
             print(f"Duplicate name: '{name}'. Saved as '{output_file.name}'")
 
         output_file.write_bytes(data)
-        # Удаляем исходный файл только после успешного копирования
+
         file.unlink()
 
         print(f"Exported: {output_file.name}")
         exported += 1
 
+    # Удаляем файл команды экспорта
     exp_request = DEVICE_PATH / "exp.bin"
 
     if exp_request.exists():
-        exp_request.rename(DEVICE_PATH / "expc.bin")
-        print("Export completed. Device notified.")
+        exp_request.unlink()
+        print("Export request removed.")
 
     print(f"Export complete: {exported} presets.")
 
+
+def prepare_export(slot_arg):
+    """Создать запрос на экспорт конкретного слота."""
+
+    if DEVICE_PATH is None or not DEVICE_PATH.exists():
+        print("Kaleidoscope not found. Run 'device' first.")
+        return
+
+    if not re.fullmatch(r"\d+", slot_arg):
+        print("Usage: export [0-127]")
+        print("Example: export 1")
+        return
+
+    slot = int(slot_arg)
+
+    if not 0 <= slot <= 127:
+        print("Invalid slot number. Slot must be between 0 and 127.")
+        return
+
+    slot_file = DEVICE_PATH / f"exp{slot:03d}.bin"
+
+    if slot_file.exists():
+        print(f"Export request for slot {slot} already exists.")
+    else:
+        slot_file.touch()
+        print(f"Export request created: exp{slot:03d}.bin")
+
+    # Файл команды создаём только если его ещё нет
+    exp_request = DEVICE_PATH / "exp.bin"
+
+    if not exp_request.exists():
+        exp_request.touch()
+        print("Export command sent to device.")
+
+
+def cmd_export(args):
+    """Экспорт пресетов в обоих направлениях."""
+
+    if len(args) == 0:
+        export_from_device()
+
+    elif len(args) == 1:
+        prepare_export(args[0])
+
+    else:
+        print("Usage: export [0-127]")
+        print("Example: export 1")
 
 def cmd_import(args):
     """Импорт пресета в Kaleidoscope."""
@@ -260,6 +304,27 @@ def cmd_clean(args):
     print("Очистка временных файлов пока не реализована.")
 
 
+def cmd_eject(args):
+    """Безопасно извлечь Kaleidoscope."""
+
+    if args:
+        print("Usage: eject")
+        return
+
+    if DEVICE_PATH is None or not DEVICE_PATH.exists():
+        print("Kaleidoscope not found.")
+        return
+
+    try:
+        subprocess.run(
+            ["diskutil", "eject", str(DEVICE_PATH)],
+            check=True
+        )
+        print("Kaleidoscope safely ejected.")
+
+    except subprocess.CalledProcessError:
+        print("Failed to eject Kaleidoscope.")
+
 # ---------------------------------------------------------
 # COMMAND DISPATCHER
 # ---------------------------------------------------------
@@ -276,6 +341,7 @@ def execute_command(parts):
         "import": lambda: cmd_import(args),
         "firmware": lambda: cmd_firmware(args),
         "clean": lambda: cmd_clean(args),
+        "eject": lambda: cmd_eject(args),
     }
 
     if command == "quit":
