@@ -4,6 +4,10 @@ import shlex
 from pathlib import Path
 import re
 import subprocess
+import urllib.request
+import json
+import os
+import shutil
 
 
 # ---------------------------------------------------------
@@ -14,6 +18,8 @@ APP_DIR = Path(__file__).resolve().parent
 HISTORY_FILE = APP_DIR / ".history"
 DEVICE_PATH = None
 PRESET_DIR = APP_DIR / "presets"
+FIRMWARE_DIR = APP_DIR / "firmwares"
+DEVICE_CONFIG = "kaleidoscope.json"
 
 
 PRESET_NAME_OFFSET = 128
@@ -32,14 +38,15 @@ ASCII_OFFSETS = [
 # ---------------------------------------------------------
 
 COMMANDS = {
-    "help": "Показать список команд",
-    "device": "Найти подключённый Kaleidoscope",
-    "export": "Экспортировать пресеты из Kaleidoscope",
-    "import": "Импортировать пресеты в Kaleidoscope",
-    "firmware": "Проверить или обновить прошивку",
-    "clean": "Удалить временные файлы обмена",
-    "eject": "Извлечь Калейдоскоп",
-    "quit": "Выход",
+    "help":     "show available commands",
+    "connect":  "detect and connect to Kaleidoscope",
+    "export":   "export presets from Kaleidoscope to computer",
+    "import":   "import presets from computer to Kaleidoscope",
+    "fw":       "download firmware from GitHub or send it to Kaleidoscope",
+    "clean":    "remove temporary files from Kaleidoscope",
+    "eject":    "safely disconnect Kaleidoscope",
+    "ls":       "list files on Kaleidoscope filesystem",
+    "quit":     "exit manager",
 }
 
 
@@ -48,7 +55,7 @@ COMMANDS = {
 # ---------------------------------------------------------
 
 def tab_complete(text, state):
-    """Автодополнение команд и имён пресетов."""
+    """Автодополнение команд, имён пресетов и прошивок."""
 
     line = readline.get_line_buffer()
     parts = line.split()
@@ -75,6 +82,31 @@ def tab_complete(text, state):
             file.name
             for file in sorted(PRESET_DIR.iterdir())
             if file.is_file() and file.name.startswith(text)
+        ]
+
+    # Автодополнение подкоманд firmware
+    elif parts and parts[0].lower() == "fw" and arg_index == 1:
+        matches = [
+            command
+            for command in ["get", "send"]
+            if command.startswith(text.lower())
+        ]
+
+    # Автодополнение имён прошивок
+    elif (
+        len(parts) >= 2
+        and parts[0].lower() == "fw"
+        and parts[1].lower() == "send"
+        and arg_index == 2
+    ):
+        FIRMWARE_DIR.mkdir(exist_ok=True)
+
+        matches = [
+            file.name
+            for file in sorted(FIRMWARE_DIR.iterdir())
+            if file.is_file()
+            and file.suffix.lower() == ".bin"
+            and file.name.startswith(text)
         ]
 
     else:
@@ -113,8 +145,90 @@ def cmd_device(args):
             return
 
     print("Kaleidoscope not found.")
-    print("Please connect Kaleidoscope and run 'device' manually.")
+    print("Please connect Kaleidoscope and run 'connect' manually.")
 
+def get_preset_name(data):
+    """Извлечь имя пресета из бинарных данных."""
+
+    if len(data) < PRESET_NAME_OFFSET + PRESET_NAME_SIZE:
+        return None
+
+    name_bytes = data[
+        PRESET_NAME_OFFSET:
+        PRESET_NAME_OFFSET + PRESET_NAME_SIZE
+    ]
+
+    name = "".join(
+        chr(ASCII_OFFSETS[index])
+        for index in name_bytes
+        if index < len(ASCII_OFFSETS)
+    ).rstrip()
+
+    return name if name else None
+
+def cmd_ls(args):
+    """Показать содержимое Kaleidoscope."""
+
+    if args:
+        print("Usage: ls")
+        return
+
+    if DEVICE_PATH is None or not DEVICE_PATH.exists():
+        print("Kaleidoscope not found. Run 'device' first.")
+        return
+
+    print(f"\nContents of Kaleidoscope ({DEVICE_PATH}):\n")
+    print(f"{'FILE':<18} DESCRIPTION")
+    print("-" * 65)
+
+    files = sorted(
+        (f for f in DEVICE_PATH.iterdir() if f.is_file()),
+        key=lambda f: f.name.lower()
+    )
+
+    if not files:
+        print("Device is empty.")
+        return
+
+    for file in files:
+        filename = file.name
+
+        if filename == "exp.bin":
+            description = "Export command"
+
+        elif filename == "imp.bin":
+            description = "Import command"
+
+        elif filename == "blink.bin":
+            description = "Firmware waiting for installation"
+        elif filename == "kaleidoscope.json":
+            try:
+                config = json.loads(file.read_text(encoding="utf-8"))
+                firmware = config.get("firmware", "unknown")
+                description = f"Last firmware: {firmware}"
+            except (OSError, json.JSONDecodeError):
+                description = "Invalid configuration"
+
+        elif re.fullmatch(r"exp\d{3}\.bin", filename):
+            try:
+                name = get_preset_name(file.read_bytes())
+                description = f"Export preset: {name}" if name else "Export preset: unknown name"
+            except OSError:
+                description = "Cannot read file"
+
+        elif re.fullmatch(r"imp\d{3}\.bin", filename):
+            try:
+                name = get_preset_name(file.read_bytes())
+                description = f"Import preset: {name}" if name else "Import preset: unknown name"
+            except OSError:
+                description = "Cannot read file"
+
+        else:
+            description = "Unknown file"
+
+        print(f"{filename:<18} {description}")
+
+    print()
 
 def export_from_device():
     """Забрать экспортированные пресеты с устройства."""
@@ -139,16 +253,7 @@ def export_from_device():
             print(f"Invalid file: {file.name}")
             continue
 
-        name_bytes = data[
-            PRESET_NAME_OFFSET:
-            PRESET_NAME_OFFSET + PRESET_NAME_SIZE
-        ]
-
-        name = "".join(
-            chr(ASCII_OFFSETS[index])
-            for index in name_bytes
-            if index < len(ASCII_OFFSETS)
-        ).rstrip()
+        name = get_preset_name(data)
 
         if not name:
             print(f"Empty preset name: {file.name}")
@@ -221,17 +326,37 @@ def prepare_export(slot_arg):
 
 
 def cmd_export(args):
-    """Экспорт пресетов в обоих направлениях."""
+    """Управление экспортом пресетов."""
 
-    if len(args) == 0:
+    if len(args) != 1:
+        print("Usage:")
+        print("  export save   - save presets from Kaleidoscope to computer")
+        print("  export N      - prepare preset export from slot N (0-127)")
+        return
+
+    if args[0].lower() == "save":
         export_from_device()
+        return
 
-    elif len(args) == 1:
-        prepare_export(args[0])
+    try:
+        slot = int(args[0])
+    except ValueError:
+        print("Invalid slot number.")
+        print("Usage: export N (0-127) or export save")
+        return
 
-    else:
-        print("Usage: export [0-127]")
-        print("Example: export 1")
+    if not 0 <= slot <= 127:
+        print("Slot number must be between 0 and 127.")
+        return
+
+    filename = f"exp{slot:03d}.bin"
+    filepath = DEVICE_PATH / filename
+
+    if filepath.exists():
+        print(f"Export command already exists: {filename}")
+        return
+
+    prepare_export(str(slot))
 
 def cmd_import(args):
     """Импорт пресета в Kaleidoscope."""
@@ -295,14 +420,167 @@ def cmd_import(args):
         imp_request.touch()
         print("Import command sent to device.")
 
-
 def cmd_firmware(args):
-    print("Работа с прошивкой пока не реализована.")
+    if not args:
+        print("Использование: fw get | fw send FIRMWARE")
+        return
+
+    # FW GET
+    if args[0] == "get":
+        api_url = (
+            "https://api.github.com/repos/vadjuse/kaleidoscope/"
+            "contents/Release%20FWs/latest?ref=main"
+        )
+
+        os.makedirs(FIRMWARE_DIR, exist_ok=True)
+
+        try:
+            request = urllib.request.Request(
+                api_url,
+                headers={"User-Agent": "Kaleidoscope-Manager"}
+            )
+
+            with urllib.request.urlopen(request, timeout=15) as response:
+                files = json.loads(response.read().decode("utf-8"))
+
+        except Exception as e:
+            print(f"Ошибка получения списка прошивок: {e}")
+            return
+
+        downloaded = 0
+        skipped = 0
+
+        for file in files:
+            if file["type"] != "file" or not file["name"].lower().endswith(".bin"):
+                continue
+
+            filename = file["name"]
+            local_path = FIRMWARE_DIR / filename
+
+            if local_path.exists():
+                print(f"Уже существует: {filename}")
+                skipped += 1
+                continue
+
+            try:
+                request = urllib.request.Request(
+                    file["download_url"],
+                    headers={"User-Agent": "Kaleidoscope-Manager"}
+                )
+
+                with urllib.request.urlopen(request, timeout=30) as response:
+                    data = response.read()
+
+                local_path.write_bytes(data)
+
+                print(f"Скачано: {filename}")
+                downloaded += 1
+
+            except Exception as e:
+                print(f"Ошибка скачивания {filename}: {e}")
+
+        print(f"\nГотово. Скачано: {downloaded}, пропущено: {skipped}")
+        return
+
+    # FW SEND
+    if args[0] == "send":
+        if len(args) != 2:
+            print("Использование: fw send FIRMWARE")
+            return
+
+        firmware_name = args[1]
+
+        if not firmware_name.lower().endswith(".bin"):
+            firmware_name += ".bin"
+
+        firmware_path = FIRMWARE_DIR / firmware_name
+
+        if not firmware_path.is_file():
+            print(f"Прошивка не найдена: {firmware_name}")
+            return
+
+        if DEVICE_PATH is None:
+            print("Устройство не подключено. Сначала выполните device.")
+            return
+
+        device_path = Path(DEVICE_PATH)
+
+        if not device_path.is_dir():
+            print("Путь к устройству недоступен.")
+            return
+
+        try:
+            # Копируем прошивку
+            shutil.copy2(firmware_path, device_path / "blink.bin")
+
+            # Читаем существующий JSON или создаём новый
+            config_path = device_path / DEVICE_CONFIG
+
+            if config_path.exists():
+                with open(config_path, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+            else:
+                config = {}
+
+            # Записываем имя прошивки без расширения
+            config["firmware"] = firmware_path.stem
+
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=4, ensure_ascii=False)
+
+            print(f"Прошивка отправлена: {firmware_name}")
+
+        except Exception as e:
+            print(f"Ошибка отправки прошивки: {e}")
+
+        return
+
+    print("Использование: fw get | fw send FIRMWARE")
 
 
 def cmd_clean(args):
-    print("Очистка временных файлов пока не реализована.")
+    """Удалить временные файлы обмена с Kaleidoscope."""
 
+    if args:
+        print("Usage: clean")
+        return
+
+    if DEVICE_PATH is None or not DEVICE_PATH.exists():
+        print("Kaleidoscope not found. Run 'device' first.")
+        return
+
+    patterns = [
+        "exp.bin",
+        "expc.bin",
+    ]
+
+    files_to_delete = []
+
+    # Файлы экспорта и импорта
+    for slot in range(128):
+        patterns.append(f"exp{slot:03d}.bin")
+        patterns.append(f"imp{slot:03d}.bin")
+
+    for filename in patterns:
+        file_path = DEVICE_PATH / filename
+
+        if file_path.is_file():
+            files_to_delete.append(file_path)
+
+    if not files_to_delete:
+        print("No temporary files found.")
+        return
+
+    deleted = 0
+
+    for file_path in files_to_delete:
+        try:
+            file_path.unlink()
+            deleted += 1
+        except OSError as e:
+            print(f"Cannot delete {file_path.name}: {e}")
+
+    print(f"Cleanup complete. Deleted {deleted} temporary files.")
 
 def cmd_eject(args):
     """Безопасно извлечь Kaleidoscope."""
@@ -336,11 +614,12 @@ def execute_command(parts):
 
     handlers = {
         "help": lambda: cmd_help(),
-        "device": lambda: cmd_device(args),
+        "connect": lambda: cmd_device(args),
         "export": lambda: cmd_export(args),
         "import": lambda: cmd_import(args),
-        "firmware": lambda: cmd_firmware(args),
+        "fw": lambda: cmd_firmware(args),
         "clean": lambda: cmd_clean(args),
+        "ls": lambda: cmd_ls(args),
         "eject": lambda: cmd_eject(args),
     }
 
@@ -397,20 +676,20 @@ def main():
                 parts = shlex.split(command)
 
             except ValueError as error:
-                print(f"Ошибка разбора команды: {error}")
+                print(f"Command parsing error: {error}")
                 continue
 
             if not execute_command(parts):
                 break
 
         except (EOFError, KeyboardInterrupt):
-            print("\nВыход.")
+            print("\nExit.")
             break
 
         except Exception as error:
-            print(f"Ошибка: {error}")
+            print(f"Error: {error}")
 
-    print("До свидания!")
+    print("Bye!")
 
 
 if __name__ == "__main__":
