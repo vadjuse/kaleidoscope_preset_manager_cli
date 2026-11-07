@@ -1,0 +1,14 @@
+ls
+export 0 40
+ls
+eject
+connect
+ls
+export save
+ls
+fw get
+fw send blink84beta_classic_font_3Nov2026.bin
+eject
+connect
+ls
+quit

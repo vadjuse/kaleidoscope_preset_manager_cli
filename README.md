@@ -26,20 +26,39 @@ Export presets from your synthesizer, organize a local preset library, import pr
 
 No external Python packages required.
 
+## Requirements
+
+- macOS
+- USB-connected Kaleidoscope synthesizer
+
+Python 3 is required only when running from source. The standalone application includes its own Python runtime.
+
 ## Installation
 
-Clone the repository:
+### Option 1: Download standalone application (macOS)
+
+Download the latest prebuilt version from the /dist directory.
+
+The standalone application does not require Python or any additional dependencies.
+
+Download the macOS build, extract it and run `ks_pres_cli`.
+
+### Option 2: Run from source
+
+If Python 3 is installed, clone the repository:
 
 ```bash
 git clone https://github.com/vadjuse/kaleidoscope-manager.git
 cd kaleidoscope-manager
 ```
 
-Run:
+Run the manager:
 
 ```bash
 python3 ks_pres_cli.py
 ```
+
+No external Python packages are required.
 
 The manager automatically detects a connected Kaleidoscope on startup.
 
@@ -193,4 +212,7 @@ The manager supports:
 - Preset parameter editing is not supported.
 - Firmware and preset installation are handled by the synthesizer.
 - Device communication relies on filesystem markers rather than a direct serial connection.
+
+## License
+MIT
 
